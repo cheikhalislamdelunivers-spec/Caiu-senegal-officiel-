@@ -48,6 +48,24 @@ jobs:
           mkdir -p caiu-android
           unzip -q "$ZIP_FILE" -d caiu-android
 
+      - name: Aligner Java et Kotlin sur Java 17
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_GRADLE=$(find caiu-android -type f -path '*/app/build.gradle' -print -quit)
+          test -n "$APP_GRADLE" || { echo "app/build.gradle introuvable"; exit 1; }
+          cat >> "$APP_GRADLE" <<'GRADLE'
+          
+          // CAIU CI: aligner la compilation Java sur Kotlin/JVM 17
+          android {
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          GRADLE
+          echo "Compatibilité Java/Kotlin configurée sur Java 17"
+
       - name: Compiler l'application
         shell: bash
         run: |
