@@ -1,44 +1,50 @@
 
-name: Build CAIU Android APK
+name: Générer l'APK Android CAIU
 
 on:
   workflow_dispatch:
-    inputs:
-      zip_file:
-        description: "Nom du ZIP Android"
-        required: false
-        type: string
   push:
-    paths:
-      - "*.zip"
-      - "**/*.zip"
-      - ".github/workflows/android.yml"
-
-permissions:
-  contents: read
+    branches:
+      - principal
+      - main
 
 jobs:
   build:
-    name: Build CAIU APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Recuperer le projet CAIU
+      - name: Télécharger le projet
         uses: actions/checkout@v4
 
       - name: Installer Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: Installer Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Installer les outils Android
+      - name: Configurer le SDK Android
+        shell: bash
         run: |
-          sdkmanager --licenses
-          sdkmanager \
+          set -euo pipefail
+
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export ANDROID_SDK_ROOT=$ANDROID_HOME
+
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager | sort -V | tail -n 1)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERREUR : sdkmanager introuvable"
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses || true
+
+          "$SDKMANAGER" --install \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
@@ -46,86 +52,76 @@ jobs:
       - name: Installer Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.7"
+          gradle-version: '8.7'
 
-      - name: Extraire le ZIP Android CAIU
-        env:
-          ZIP_INPUT: ${{ inputs.zip_file }}
+      - name: Extraire le projet Android CAIU
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          ZIP_FILE="${ZIP_INPUT:-CAIU-SENEGAL-OFFICIEL_Projet_Android(1)-1.zip}"
+          ZIP_FILE="CAIU-SENEGAL-OFFICIEL_Projet_Android(1)-1.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERREUR : ZIP introuvable : $ZIP_FILE"
+            echo "ERREUR : fichier ZIP Android introuvable"
             exit 1
           fi
 
           mkdir -p caiu-android
           unzip -q "$ZIP_FILE" -d caiu-android
 
-          echo "Extraction terminee."
+          echo "Extraction terminée"
 
-      - name: Rechercher le projet Gradle
-        id: project
+      - name: Compiler l'application CAIU
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          WRAPPER=$(find caiu-android -type f -name gradlew | head -n 1)
+          WRAPPER=$(find caiu-android -type f \
+            -name gradlew -print -quit)
 
           if [ -n "$WRAPPER" ]; then
             PROJECT_DIR=$(dirname "$WRAPPER")
-            echo "wrapper=true" >> "$GITHUB_OUTPUT"
+            cd "$PROJECT_DIR"
+            chmod +x gradlew
+            ./gradlew --no-daemon assembleDebug
           else
             SETTINGS=$(find caiu-android -type f \
-              \( -name settings.gradle -o -name settings.gradle.kts \) \
-              | head -n 1)
+              \( -name settings.gradle \
+              -o -name settings.gradle.kts \) -print -quit)
 
             if [ -z "$SETTINGS" ]; then
-              echo "ERREUR : Projet Gradle introuvable."
+              echo "ERREUR : projet Gradle introuvable"
               exit 1
             fi
 
             PROJECT_DIR=$(dirname "$SETTINGS")
-            echo "wrapper=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Projet trouve : $PROJECT_DIR"
-
-      - name: Compiler CAIU
-        run: |
-          set -e
-          cd "${{ steps.project.outputs.dir }}"
-
-          if [ "${{ steps.project.outputs.wrapper }}" = "true" ]; then
-            chmod +x gradlew
-            ./gradlew --no-daemon assembleDebug
-          else
+            cd "$PROJECT_DIR"
             gradle --no-daemon assembleDebug
           fi
 
-      - name: Recuperer les APK
+      - name: Préparer le fichier APK
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           mkdir -p apk-output
 
-          find caiu-android -type f -name "*.apk" \
+          find caiu-android -type f \
+            -path '*/build/outputs/apk/*' \
+            -name '*.apk' \
             -exec cp {} apk-output/ \;
 
-          if [ -z "$(ls -A apk-output)" ]; then
-            echo "ERREUR : Aucun APK genere."
+          if ! ls apk-output/*.apk >/dev/null 2>&1; then
+            echo "ERREUR : aucun APK généré"
             exit 1
           fi
 
           ls -lh apk-output/
 
-      - name: Conserver APK CAIU
+      - name: Publier l'APK CAIU
         uses: actions/upload-artifact@v4
         with:
           name: CAIU-ANDROID-APK
           path: apk-output/*.apk
           if-no-files-found: error
-          retention-days: 30
           
