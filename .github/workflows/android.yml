@@ -1,17 +1,15 @@
-
 name: Générer l'APK Android CAIU
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - principal
       - main
+      - principal
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Télécharger le projet
         uses: actions/checkout@v4
@@ -22,106 +20,47 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Configurer le SDK Android
-        shell: bash
+      - name: Configurer Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Installer les composants Android
         run: |
-          set -euo pipefail
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-          export ANDROID_HOME=/usr/local/lib/android/sdk
-          export ANDROID_SDK_ROOT=$ANDROID_HOME
-
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-
-          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager | sort -V | tail -n 1)
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERREUR : sdkmanager introuvable"
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" --licenses || true
-
-          "$SDKMANAGER" --install \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      - name: Installer Gradle
+      - name: Installer Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
-          distributionUrl=https\://services.gradle.org/distributions/gradle-8.9-all.zip
+          gradle-version: '8.9'
 
       - name: Extraire le projet Android CAIU
-        shell: bash
         run: |
           set -euo pipefail
-
           ZIP_FILE="CAIU-SENEGAL-OFFICIEL_Projet_Android(1)-1.zip"
-
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERREUR : fichier ZIP Android introuvable"
-            exit 1
-          fi
-
+          test -f "$ZIP_FILE" || { echo "ZIP Android introuvable"; exit 1; }
           mkdir -p caiu-android
           unzip -q "$ZIP_FILE" -d caiu-android
 
-          echo "Extraction terminée"
-
-      - name: Compiler l'application CAIU
-        shell: bash
+      - name: Compiler l'application
         run: |
           set -euo pipefail
+          SETTINGS=$(find caiu-android -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)
+          test -n "$SETTINGS" || { echo "Fichier settings.gradle introuvable"; exit 1; }
+          PROJECT_DIR=$(dirname "$SETTINGS")
+          cd "$PROJECT_DIR"
+          gradle --no-daemon assembleDebug
 
-          WRAPPER=$(find caiu-android -type f \
-            -name gradlew -print -quit)
-
-          if [ -n "$WRAPPER" ]; then
-            PROJECT_DIR=$(dirname "$WRAPPER")
-            cd "$PROJECT_DIR"
-            chmod +x gradlew
-            ./gradlew --no-daemon assembleDebug
-          else
-            SETTINGS=$(find caiu-android -type f \
-              \( -name settings.gradle \
-              -o -name settings.gradle.kts \) -print -quit)
-
-            if [ -z "$SETTINGS" ]; then
-              echo "ERREUR : projet Gradle introuvable"
-              exit 1
-            fi
-
-            PROJECT_DIR=$(dirname "$SETTINGS")
-            cd "$PROJECT_DIR"
-            gradle --no-daemon assembleDebug
-          fi
-
-      - name: Préparer le fichier APK
-        shell: bash
+      - name: Préparer l'APK
         run: |
           set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/apk-output"
+          find "$GITHUB_WORKSPACE/caiu-android" -type f -path '*/build/outputs/apk/*' -name '*.apk' -exec cp {} "$GITHUB_WORKSPACE/apk-output/" \;
+          ls -lh "$GITHUB_WORKSPACE/apk-output"
+          compgen -G "$GITHUB_WORKSPACE/apk-output/*.apk" >/dev/null
 
-          mkdir -p apk-output
-
-          find caiu-android -type f \
-            -path '*/build/outputs/apk/*' \
-            -name '*.apk' \
-            -exec cp {} apk-output/ \;
-
-          if ! ls apk-output/*.apk >/dev/null 2>&1; then
-            echo "ERREUR : aucun APK généré"
-            exit 1
-          fi
-
-          ls -lh apk-output/
-
-      - name: Publier l'APK CAIU
+      - name: Publier l'APK
         uses: actions/upload-artifact@v4
         with:
           name: CAIU-ANDROID-APK
           path: apk-output/*.apk
           if-no-files-found: error
-          
