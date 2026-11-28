@@ -8,9 +8,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: caiu-android-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Télécharger le dépôt
         uses: actions/checkout@v4
@@ -25,31 +30,82 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
       - name: Installer Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Assembler le projet Android et la boutique avec les photos
+      - name: Assembler le projet Android et la boutique
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p work/android work/site
-          unzip -q "CAIU-SENEGAL-OFFICIEL_Projet_Android(1)-1.zip" -d work/android
-          unzip -q "CAIU_boutique_avec_vos_photos.zip" -d work/site
+          set -Eeuo pipefail
 
-          PROJECT_DIR="$(find work/android -type f -name settings.gradle -print -quit | xargs dirname)"
-          test -n "$PROJECT_DIR"
-          APP_DIR="$PROJECT_DIR/app/src/main"
-          APP_BUILD_FILE="$(find "$PROJECT_DIR/app" -maxdepth 1 -type f \\( -name 'build.gradle' -o -name 'build.gradle.kts' \\) -print -quit)"
-          test -n "$APP_BUILD_FILE"
-          # Aligner la compilation Java sur Kotlin/JVM 17.
-          sed -i 's/VERSION_1_8/VERSION_17/g' "$APP_BUILD_FILE"
-          mkdir -p "$APP_DIR/assets/images"
-          cp "work/site/CAIU_site/index.html" "$APP_DIR/assets/index.html"
-          cp -R "work/site/CAIU_site/images/." "$APP_DIR/assets/images/"
+          mkdir -p work/android work/site
+
+          ANDROID_ZIP="$(find . -maxdepth 3 -type f -name 'CAIU-SENEGAL-OFFICIEL_Projet_Android(1)-1.zip' -print -quit)"
+          SITE_ZIP="$(find . -maxdepth 3 -type f -name 'CAIU_boutique_avec_vos_photos.zip' -print -quit)"
+
+          if [[ -z "$ANDROID_ZIP" ]]; then
+            echo "::error::Archive Android introuvable : CAIU-SENEGAL-OFFICIEL_Projet_Android(1)-1.zip"
+            exit 1
+          fi
+          if [[ -z "$SITE_ZIP" ]]; then
+            echo "::error::Archive boutique introuvable : CAIU_boutique_avec_vos_photos.zip"
+            exit 1
+          fi
+
+          unzip -q "$ANDROID_ZIP" -d work/android
+          unzip -q "$SITE_ZIP" -d work/site
+
+          PROJECT_DIR=""
+          while IFS= read -r candidate; do
+            PROJECT_DIR="$(dirname "$candidate")"
+            break
+          done < <(find work/android -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print)
+
+          if [[ -z "$PROJECT_DIR" ]]; then
+            echo "::error::Aucun settings.gradle ou settings.gradle.kts trouvé dans l'archive Android."
+            exit 1
+          fi
+
+          APP_DIR="$PROJECT_DIR/app"
+          if [[ ! -d "$APP_DIR" ]]; then
+            echo "::error::Module Android app introuvable dans $PROJECT_DIR."
+            exit 1
+          fi
+
+          APP_BUILD_FILE=""
+          for candidate in "$APP_DIR/build.gradle" "$APP_DIR/build.gradle.kts"; do
+            if [[ -f "$candidate" ]]; then
+              APP_BUILD_FILE="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$APP_BUILD_FILE" ]]; then
+            echo "::error::Fichier build.gradle ou build.gradle.kts introuvable dans $APP_DIR."
+            exit 1
+          fi
+
+          APP_DIR="$APP_DIR/src/main"
+          SITE_ROOT=""
+          while IFS= read -r candidate; do
+            SITE_ROOT="$(dirname "$candidate")"
+            break
+          done < <(find work/site -type f -path '*/CAIU_site/index.html' -print)
+
+          if [[ -z "$SITE_ROOT" ]]; then
+            echo "::error::index.html introuvable dans le dossier CAIU_site de l'archive boutique."
+            exit 1
+          fi
+
+          mkdir -p "$APP_DIR/assets/images" "$APP_DIR/java/sn/caiu/senegalofficiel"
+          cp "$SITE_ROOT/CAIU_site/index.html" "$APP_DIR/assets/index.html"
+          if [[ -d "$SITE_ROOT/CAIU_site/images" ]]; then
+            cp -R "$SITE_ROOT/CAIU_site/images/." "$APP_DIR/assets/images/"
+          else
+            echo "::warning::Dossier images absent : le site sera copié sans images."
+          fi
 
           cat > "$APP_DIR/java/sn/caiu/senegalofficiel/MainActivity.kt" <<'KOTLIN'
           package sn.caiu.senegalofficiel
@@ -136,25 +192,35 @@ jobs:
           </manifest>
           MANIFEST
 
-          echo "Projet assemblé : $PROJECT_DIR"
-          echo "Photos copiées :"
-          find "$APP_DIR/assets/images" -type f
+          echo "Projet Android : $PROJECT_DIR"
+          echo "Fichier Gradle : $APP_BUILD_FILE"
+          echo "Nombre d'images copiées : $(find "$APP_DIR/assets/images" -type f | wc -l)"
 
       - name: Compiler l'APK de test
         shell: bash
         run: |
-          set -euo pipefail
-          PROJECT_DIR="$(find work/android -type f -name settings.gradle -print -quit | xargs dirname)"
+          set -Eeuo pipefail
+          PROJECT_DIR="$(find work/android -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit | xargs -r dirname)"
+          if [[ -z "$PROJECT_DIR" ]]; then
+            echo "::error::Projet Android introuvable après assemblage."
+            exit 1
+          fi
           cd "$PROJECT_DIR"
-          gradle --no-daemon assembleDebug
+          gradle --no-daemon --stacktrace assembleDebug
 
-      - name: Préparer le fichier APK
+      - name: Vérifier et préparer l'APK
+        shell: bash
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           mkdir -p "$GITHUB_WORKSPACE/apk-output"
-          find "$GITHUB_WORKSPACE/work/android" -type f -path '*/build/outputs/apk/debug/*.apk' -exec cp {} "$GITHUB_WORKSPACE/apk-output/CAIU-BOUTIQUE-debug.apk" \;
+          APK_SOURCE="$(find "$GITHUB_WORKSPACE/work/android" -type f -path '*/build/outputs/apk/debug/*.apk' -print -quit)"
+          if [[ -z "$APK_SOURCE" || ! -s "$APK_SOURCE" ]]; then
+            echo "::error::Aucun APK debug valide n'a été produit."
+            exit 1
+          fi
+          cp "$APK_SOURCE" "$GITHUB_WORKSPACE/apk-output/CAIU-BOUTIQUE-debug.apk"
           test -s "$GITHUB_WORKSPACE/apk-output/CAIU-BOUTIQUE-debug.apk"
-          ls -lh "$GITHUB_WORKSPACE/apk-output"
+          ls -lh "$GITHUB_WORKSPACE/apk-output/CAIU-BOUTIQUE-debug.apk"
 
       - name: Publier l'APK en artefact
         uses: actions/upload-artifact@v4
