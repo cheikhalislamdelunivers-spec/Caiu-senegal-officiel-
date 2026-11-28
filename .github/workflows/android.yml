@@ -43,6 +43,10 @@ jobs:
           PROJECT_DIR="$(find work/android -type f -name settings.gradle -print -quit | xargs dirname)"
           test -n "$PROJECT_DIR"
           APP_DIR="$PROJECT_DIR/app/src/main"
+          APP_BUILD_FILE="$(find "$PROJECT_DIR/app" -maxdepth 1 -type f \\( -name 'build.gradle' -o -name 'build.gradle.kts' \\) -print -quit)"
+          test -n "$APP_BUILD_FILE"
+          # Aligner la compilation Java sur Kotlin/JVM 17.
+          sed -i 's/VERSION_1_8/VERSION_17/g' "$APP_BUILD_FILE"
           mkdir -p "$APP_DIR/assets/images"
           cp "work/site/CAIU_site/index.html" "$APP_DIR/assets/index.html"
           cp -R "work/site/CAIU_site/images/." "$APP_DIR/assets/images/"
