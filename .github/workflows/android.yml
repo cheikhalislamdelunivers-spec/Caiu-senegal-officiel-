@@ -3,15 +3,16 @@ name: Générer l'APK Android CAIU
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - principal
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Télécharger le projet
+      - name: Télécharger le dépôt
         uses: actions/checkout@v4
 
       - name: Installer Java 17
@@ -20,74 +21,141 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Configurer Android SDK sans ancien paquet tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          export ANDROID_HOME=/usr/local/lib/android/sdk
-          export ANDROID_SDK_ROOT="$ANDROID_HOME"
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
-          test -n "$SDKMANAGER" || { echo "sdkmanager introuvable"; exit 1; }
-          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses || true
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+      - name: Installer Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Installer les composants Android
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Installer Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Extraire le projet Android CAIU
+      - name: Assembler le projet Android et la boutique avec les photos
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE="CAIU-SENEGAL-OFFICIEL_Projet_Android(1)-1.zip"
-          test -f "$ZIP_FILE" || { echo "ZIP Android introuvable"; exit 1; }
-          mkdir -p caiu-android
-          unzip -q "$ZIP_FILE" -d caiu-android
+          mkdir -p work/android work/site
+          unzip -q "CAIU-SENEGAL-OFFICIEL_Projet_Android(1)-1.zip" -d work/android
+          unzip -q "CAIU_boutique_avec_vos_photos.zip" -d work/site
 
-      - name: Aligner Java et Kotlin sur Java 17
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP_GRADLE=$(find caiu-android -type f -path '*/app/build.gradle' -print -quit)
-          test -n "$APP_GRADLE" || { echo "app/build.gradle introuvable"; exit 1; }
-          cat >> "$APP_GRADLE" <<'GRADLE'
-          
-          // CAIU CI: aligner la compilation Java sur Kotlin/JVM 17
-          android {
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
+          PROJECT_DIR="$(find work/android -type f -name settings.gradle -print -quit | xargs dirname)"
+          test -n "$PROJECT_DIR"
+          APP_DIR="$PROJECT_DIR/app/src/main"
+          mkdir -p "$APP_DIR/assets/images"
+          cp "work/site/CAIU_site/index.html" "$APP_DIR/assets/index.html"
+          cp -R "work/site/CAIU_site/images/." "$APP_DIR/assets/images/"
+
+          cat > "$APP_DIR/java/sn/caiu/senegalofficiel/MainActivity.kt" <<'KOTLIN'
+          package sn.caiu.senegalofficiel
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Bundle
+          import android.webkit.WebResourceRequest
+          import android.webkit.WebSettings
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+
+          class MainActivity : Activity() {
+              private lateinit var webView: WebView
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  webView = WebView(this)
+                  webView.settings.apply {
+                      javaScriptEnabled = true
+                      domStorageEnabled = true
+                      allowFileAccess = true
+                      allowContentAccess = false
+                      allowFileAccessFromFileURLs = false
+                      allowUniversalAccessFromFileURLs = false
+                      mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                      setSupportMultipleWindows(false)
+                  }
+                  webView.webViewClient = object : WebViewClient() {
+                      override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+                          handleNavigation(request.url)
+
+                      @Suppress("DEPRECATION")
+                      override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean =
+                          handleNavigation(Uri.parse(url))
+                  }
+                  WebView.setWebContentsDebuggingEnabled(false)
+                  setContentView(webView)
+                  webView.loadUrl("file:///android_asset/index.html")
+              }
+
+              private fun handleNavigation(uri: Uri): Boolean {
+                  if (uri.scheme == "file" && uri.path?.startsWith("/android_asset/") == true) return false
+                  if (uri.scheme == "https" && uri.host == "wa.me" && uri.path == "/221771908785") {
+                      return try {
+                          startActivity(Intent(Intent.ACTION_VIEW, uri))
+                          true
+                      } catch (_: Exception) {
+                          true
+                      }
+                  }
+                  return true
+              }
+
+              override fun onDestroy() {
+                  if (::webView.isInitialized) {
+                      webView.stopLoading()
+                      webView.destroy()
+                  }
+                  super.onDestroy()
               }
           }
-          GRADLE
-          echo "Compatibilité Java/Kotlin configurée sur Java 17"
+          KOTLIN
 
-      - name: Compiler l'application
+          cat > "$APP_DIR/AndroidManifest.xml" <<'MANIFEST'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:theme="@style/AppTheme"
+                  android:label="CAIU BOUTIQUE"
+                  android:usesCleartextTraffic="false"
+                  android:allowBackup="false"
+                  android:supportsRtl="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          MANIFEST
+
+          echo "Projet assemblé : $PROJECT_DIR"
+          echo "Photos copiées :"
+          find "$APP_DIR/assets/images" -type f
+
+      - name: Compiler l'APK de test
         shell: bash
         run: |
           set -euo pipefail
-          SETTINGS=$(find caiu-android -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)
-          test -n "$SETTINGS" || { echo "Fichier settings.gradle introuvable"; exit 1; }
-          PROJECT_DIR=$(dirname "$SETTINGS")
+          PROJECT_DIR="$(find work/android -type f -name settings.gradle -print -quit | xargs dirname)"
           cd "$PROJECT_DIR"
           gradle --no-daemon assembleDebug
 
-      - name: Préparer l'APK
-        shell: bash
+      - name: Préparer le fichier APK
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/apk-output"
-          find "$GITHUB_WORKSPACE/caiu-android" -type f -path '*/build/outputs/apk/*' -name '*.apk' -exec cp {} "$GITHUB_WORKSPACE/apk-output/" \;
+          find "$GITHUB_WORKSPACE/work/android" -type f -path '*/build/outputs/apk/debug/*.apk' -exec cp {} "$GITHUB_WORKSPACE/apk-output/CAIU-BOUTIQUE-debug.apk" \;
+          test -s "$GITHUB_WORKSPACE/apk-output/CAIU-BOUTIQUE-debug.apk"
           ls -lh "$GITHUB_WORKSPACE/apk-output"
-          compgen -G "$GITHUB_WORKSPACE/apk-output/*.apk" >/dev/null
 
-      - name: Publier l'APK
+      - name: Publier l'APK en artefact
         uses: actions/upload-artifact@v4
         with:
-          name: CAIU-ANDROID-APK
-          path: apk-output/*.apk
+          name: CAIU-BOUTIQUE-debug-APK
+          path: apk-output/CAIU-BOUTIQUE-debug.apk
           if-no-files-found: error
+          retention-days: 14
