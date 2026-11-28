@@ -31,6 +31,12 @@ jobs:
         with:
           accept-android-sdk-licenses: true
 
+      - name: Installer les composants Android nécessaires
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
       - name: Installer Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -88,21 +94,17 @@ jobs:
           fi
 
           APP_DIR="$APP_DIR/src/main"
-          SITE_ROOT=""
-          while IFS= read -r candidate; do
-            SITE_ROOT="$(dirname "$candidate")"
-            break
-          done < <(find work/site -type f -path '*/CAIU_site/index.html' -print)
-
-          if [[ -z "$SITE_ROOT" ]]; then
+          SITE_INDEX="$(find work/site -type f -path '*/CAIU_site/index.html' -print -quit)"
+          if [[ -z "$SITE_INDEX" ]]; then
             echo "::error::index.html introuvable dans le dossier CAIU_site de l'archive boutique."
             exit 1
           fi
+          SITE_DIR="$(dirname "$SITE_INDEX")"
 
           mkdir -p "$APP_DIR/assets/images" "$APP_DIR/java/sn/caiu/senegalofficiel"
-          cp "$SITE_ROOT/CAIU_site/index.html" "$APP_DIR/assets/index.html"
-          if [[ -d "$SITE_ROOT/CAIU_site/images" ]]; then
-            cp -R "$SITE_ROOT/CAIU_site/images/." "$APP_DIR/assets/images/"
+          cp "$SITE_INDEX" "$APP_DIR/assets/index.html"
+          if [[ -d "$SITE_DIR/images" ]]; then
+            cp -R "$SITE_DIR/images/." "$APP_DIR/assets/images/"
           else
             echo "::warning::Dossier images absent : le site sera copié sans images."
           fi
