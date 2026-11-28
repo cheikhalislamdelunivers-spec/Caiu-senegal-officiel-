@@ -208,7 +208,19 @@ jobs:
             exit 1
           fi
           cd "$PROJECT_DIR"
-          gradle --no-daemon --stacktrace assembleDebug
+
+          # Harmonise la cible Java avec Kotlin (le projet ZIP cible Java 8
+          # alors que Kotlin cible déjà JVM 17).
+          cat > "$RUNNER_TEMP/caiu-java17.gradle" <<'GRADLE'
+          allprojects {
+              tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {
+                  sourceCompatibility = '17'
+                  targetCompatibility = '17'
+              }
+          }
+          GRADLE
+
+          gradle --no-daemon --stacktrace --warning-mode all -I "$RUNNER_TEMP/caiu-java17.gradle" assembleDebug
 
       - name: Vérifier et préparer l'APK
         shell: bash
